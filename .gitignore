@@ -1,0 +1,10 @@
+*.elf
+output.dat
+a.out
+TODO.md
+.pytest_cache
+__pycache__
+.coverage
+test_programs/test6.s
+tmp
+htmlcov

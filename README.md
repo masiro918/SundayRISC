@@ -1,6 +1,6 @@
-[![Run Tests](https://github.com/<OWNER>/<REPOSITORY>/actions/workflows/run-tests.yml/badge.svg)](https://github.com/<OWNER>/<REPOSITORY>/actions/workflows/run-tests.yml)
+[![Run Tests](https://github.com/masiro918/SundayRISC/actions/workflows/run-tests.yml/badge.svg)](https://github.com/<OWNER>/<REPOSITORY>/actions/workflows/run-tests.yml)
 
-***IMPORTANT! This software is, at least for now, very experimental. The software is fully a Sunday hobby project. It is possible, even likely, that the software is full of bugs. When using this software, please be aware that the software is very much a work in progress! Docum***
+***IMPORTANT! This software is, at least for now, very experimental. The software is fully a Sunday hobby project. It is possible, even likely, that the software is full of bugs. When using this software, please be aware that the software is very much a work in progress! Unfortunately, the documentation is also very incomplete.***
 ----
 
 This program is a customized RISC-V assembly language implementation designed to demonstrate basic functionalities and interactions with a simplified virtual machine environment. It includes instructions and operations related to system calls, networking, and terminal output. Key features and architectural limitations are highlighted to provide insight into its operational mechanics.

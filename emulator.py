@@ -39,6 +39,29 @@ ADDRESS_ECALL = ADDRESS + 0x200
 ADDRESS_TIMER_INT = ADDRESS + 0x208
 MMIO_BASE = 0x200000  # Base address for MMIO
 ADDRESS_MEPC = 0x1FFFFB
+ADDRESS_CONTEXT = 0x1FFF00
+
+CONTEXT_REGISTERS = [
+    UC_RISCV_REG_RA,
+    UC_RISCV_REG_GP,
+    UC_RISCV_REG_SP,
+    UC_RISCV_REG_S0,
+    UC_RISCV_REG_S1,
+    UC_RISCV_REG_S2,
+    UC_RISCV_REG_S3,
+    UC_RISCV_REG_S4,
+    UC_RISCV_REG_S5,
+    UC_RISCV_REG_S6,
+    UC_RISCV_REG_S7,
+    UC_RISCV_REG_A0,
+    UC_RISCV_REG_A1,
+    UC_RISCV_REG_A2,
+    UC_RISCV_REG_A3,
+    UC_RISCV_REG_A4,
+    UC_RISCV_REG_A5,
+    UC_RISCV_REG_A6,
+    UC_RISCV_REG_A7,
+]
 
 ###################################################################################
 
@@ -94,6 +117,18 @@ def read_binary_file_to_program_constant(file_path):
             return program
     except IOError as e:
         raise Exception(f"Error reading file {file_path}: {e}")
+
+
+def save_interrupt_context(uc):
+    for i, reg in enumerate(CONTEXT_REGISTERS):
+        reg_value = int(uc.reg_read(reg))
+        uc.mem_write(ADDRESS_CONTEXT + (i * 4), reg_value.to_bytes(4, 'little'))
+
+
+def restore_interrupt_context(uc):
+    for i, reg in enumerate(CONTEXT_REGISTERS):
+        reg_value = uc.mem_read(ADDRESS_CONTEXT + (i * 4), 4)
+        uc.reg_write(reg, int.from_bytes(reg_value, 'little'))
 
 
 def hook_code(uc, address, size, user_data):
@@ -303,25 +338,53 @@ def main(program="a.out"):
 
     _breakpoint = 0
     breakpoint_set = False
+    init_fs_path = None
+    init_fs_addr = None
 
     try:
-        if len(sys.argv) >= 3 and sys.argv[2] == "--debug":
-            DEBUG_MODE = True
-        if len(sys.argv) >= 3 and sys.argv[2] == "--debug-prints":
-            DEBUG_PRINTS = True
-        if len(sys.argv) >= 3 and "--breakpoint" in sys.argv[2]:
-            addr = str(sys.argv[2]).split("=")[1]
-            addr = int(addr, 16)
-            _breakpoint = addr
-            breakpoint_set = True
-            print("breakpoint set", hex(addr))
-        if len(sys.argv) >= 3 and sys.argv[2] == "--no-debug-prints":
-            DEBUG_PRINTS = False
+        for arg in sys.argv[2:]:
+            if arg == "--debug":
+                DEBUG_MODE = True
+                continue
+            if arg == "--debug-prints":
+                DEBUG_PRINTS = True
+                continue
+            if arg == "--no-debug-prints":
+                DEBUG_PRINTS = False
+                continue
+            if arg.startswith("--breakpoint="):
+                addr = arg.split("=", 1)[1]
+                _breakpoint = int(addr, 0)
+                breakpoint_set = True
+                print("breakpoint set", hex(_breakpoint))
+                continue
+            if arg.startswith("--init-fs=") or arg.startswith("--init_fs="):
+                init_fs_path = arg.split("=", 1)[1]
+                continue
+            if arg.startswith("--init-fs-addr=") or arg.startswith("--init_fs_addr="):
+                addr = arg.split("=", 1)[1]
+                init_fs_addr = int(addr, 0)
+                continue
+
+            raise Exception(f"Unknown argument: {arg}")
+
+        if (init_fs_path is None) != (init_fs_addr is None):
+            raise Exception("Both --init-fs and --init-fs-addr must be set together")
 
         # Load program
         PROGRAM = read_binary_file_to_program_constant(program)
 
         mu.mem_write(ADDRESS, PROGRAM)
+
+        if init_fs_path is not None and init_fs_addr is not None:
+            init_fs = read_binary_file_to_program_constant(init_fs_path)
+            init_fs_end = init_fs_addr + len(init_fs)
+            if init_fs_addr < 0 or init_fs_end > MEM_SIZE:
+                raise Exception(
+                    f"init_fs does not fit in RAM: addr={hex(init_fs_addr)} size={len(init_fs)}"
+                )
+            mu.mem_write(init_fs_addr, init_fs)
+            DEBUG(f"Loaded init_fs '{init_fs_path}' to {hex(init_fs_addr)} ({len(init_fs)} bytes)")
 
         # Add hooks
         mu.hook_add(UC_HOOK_CODE, hook_code)
@@ -353,6 +416,7 @@ def main(program="a.out"):
             
             if next_inst_ecall(mu.mem_read(pc, 4)): # pyright: ignore[reportArgumentType]
                 if DEBUG_MODE: print(f">>> Tracing instruction at {hex(pc)} \tecall\n")
+                save_interrupt_context(mu)
                 mepc = int(mu.reg_read(UC_RISCV_REG_PC)) + 4 # pyright: ignore[reportArgumentType]
                 mu.mem_write(ADDRESS_MEPC, mepc.to_bytes(4, 'little'))
                 pc = ADDRESS_ECALL
@@ -364,12 +428,14 @@ def main(program="a.out"):
                     if DEBUG_MODE: print("TIMER_INT")
                     TIMER_INTERRUPT_ENABLED = False
                     TIMER_FLAG = True
+                    save_interrupt_context(mu)
                     mepc = int(mu.reg_read(UC_RISCV_REG_PC)) # pyright: ignore[reportArgumentType]
                     mu.mem_write(ADDRESS_MEPC, mepc.to_bytes(4, 'little'))
                     pc = ADDRESS_TIMER_INT
 
             if next_inst_mret(mu.mem_read(pc, 4)): # pyright: ignore[reportArgumentType]
                 if DEBUG_MODE: print(f">>> Tracing instruction at {hex(pc)} \tmret\n")
+                restore_interrupt_context(mu)
                 mepc = mu.mem_read(ADDRESS_MEPC, 4)
                 pc = int.from_bytes(mepc, 'little') 
                 if TIMER_FLAG:

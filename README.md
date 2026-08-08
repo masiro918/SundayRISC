@@ -32,6 +32,9 @@ This program is a customized RISC-V assembly language implementation designed to
 - **Terminal Output**:
   - Allows single-byte characters to be printed directly to an on-screen terminal.
 
+- **Optional init_fs preload**:
+  - Emulator can preload an additional raw binary file (`init_fs`) into RAM at a user-selected address before execution starts.
+
 A complete overview of the hardware memory layout and device addresses can be found in the `memory_map.md` file.
 
 ## 2. Restrictions
@@ -96,7 +99,31 @@ Behavior summary:
 - Handler returns with custom `mret` instruction, which restores `PC` from `MEPC` and re-enables timer interrupts.
 - Because saved value is current `PC`, execution continues from interrupted instruction after `mret`.
 
-## 4. Testing
+## 4. Command-line options
+
+Basic usage:
+
+```bash
+python3 emulator.py <program.bin> [options]
+```
+
+Options:
+- `--debug`
+- `--debug-prints`
+- `--no-debug-prints`
+- `--breakpoint=<address>` (example: `--breakpoint=0x10274`)
+- `--init-fs=<path/to/init_fs.bin>`
+- `--init-fs-addr=<address>` (example: `--init-fs-addr=0x180000`)
+
+`--init-fs` and `--init-fs-addr` must be provided together.
+
+Example:
+
+```bash
+python3 emulator.py kernel.bin --init-fs=init_fs.bin --init-fs-addr=0x180000
+```
+
+## 5. Testing
 
 Run the full test suite locally with:
 
@@ -108,7 +135,7 @@ The `run_tests.sh` script starts a local HTTP server for test needs, runs `pytes
 
 > **Build requirement for tests:** test programs are assembled with the provided `test_programs/assemble.sh` script, which produces flat binaries the emulator can run directly (without converting to ELF format).
 
-### 4.1 Testing with Docker
+### 5.1 Testing with Docker
 
 A `Dockerfile` is included in the project root, so tests can be run in a containerized environment.
 

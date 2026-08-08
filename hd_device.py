@@ -68,7 +68,6 @@ class VirtHD():
         self.__do_write(data)
         self.__status = 0
         self.__device_addr = 0
-
         
     def read(self, device_addr: int, block_count: int) -> bytes:
         """ Reads specified number of blocks from device address. Each block is 512 bytes. """
@@ -84,3 +83,40 @@ class VirtHD():
         self.__device_addr = 0
         return data
 
+    def __str__(self):
+        ret_str = ""
+        for key in self.__content:
+            value = self.__content[key]
+            ret_str += f"\n<< {key} >>\n\t{value}\n"
+        return ret_str
+
+def write_file(file: str) -> VirtHD:
+    """ Writes file into device from block 1 -> ... """
+
+    hd=VirtHD()
+
+    f=open(file, "rb")
+    data=f.read().decode("utf-8", "ignore")
+    f.close()
+
+    blocks = []
+    p = 0
+    block = str()
+    for c in data:
+        if p == 512:
+            blocks.append(block)
+            block = str(c)
+            p = 1
+            continue
+        block = block + c
+        p=p+1
+
+    for i in range(len(blocks)):
+        hd.write(blocks[i], i*512)
+
+    return hd
+
+"""
+hd=write_file("fs.bin")
+print(hd.__str__())
+"""

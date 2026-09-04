@@ -155,4 +155,24 @@ END
     clean()
 
 
+def test10():
+    # compile_program("test10.s", "10")
+
+    db_path = f"{TEST_PROGRAM_DIR}test10_files.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    os.system(
+        f"EMULATOR_FS_DB={db_path} python3 emulator.py {TEST_PROGRAM_DIR}a10.out --debug-prints > {TEST_PROGRAM_DIR}output.dat"
+    )
+
+    output = read_output()
+
+    assert "HELLOb" in output
+    assert "END" in output
+
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    clean()
 

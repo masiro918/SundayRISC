@@ -20,12 +20,22 @@ from unicorn.riscv_const import * # pyright: ignore[reportWildcardImportFromLibr
 from capstone import * # pyright: ignore[reportWildcardImportFromLibrary]
 from scapy.layers.l2 import Ether
 
+import os
+import sqlite3
+
 from tcpip_proxy import TCPIPProxy
 from misc import *
 from hd_device import VirtHD
 
 
 ADDRESS = 0x10074
+PROTECTED_START = 0x0
+
+INST_ECALL = b'\x73\x00\x00\x00'          # standard RISC-V ecall
+INST_ECALL_CUSTOM = b'\x13\x00\x80\x00'   # emulator trap helper
+INST_MRET_CUSTOM = b'\x13\x00\x90\x00'    # emulator return helper
+
+SQLITE_DB_PATH = os.environ.get("EMULATOR_FS_DB", "files.db")
 
 #############################
 DEBUG_MODE = False
@@ -85,6 +95,10 @@ hd_DEVICE_ADDR_REG = 0
 hd_BLOCK_COUNT_REG = 0
 hd_DATA_ADDR_REG = 0
 
+# optional init-fs (RAM-fs) preload metadata
+ram_fs_addr = None
+ram_fs_size = 0
+
 hd=VirtHD()
 
 # initialize the program counter
@@ -118,18 +132,21 @@ def read_binary_file_to_program_constant(file_path):
     except IOError as e:
         raise Exception(f"Error reading file {file_path}: {e}")
 
-
 def save_interrupt_context(uc):
-    for i, reg in enumerate(CONTEXT_REGISTERS):
-        reg_value = int(uc.reg_read(reg))
-        uc.mem_write(ADDRESS_CONTEXT + (i * 4), reg_value.to_bytes(4, 'little'))
+    i=0
 
+    for _, reg in enumerate(CONTEXT_REGISTERS):
+        val = int(uc.reg_read(reg))
+        uc.mem_write(ADDRESS_CONTEXT + (i * 4), val.to_bytes(4, 'little'))
+        i+=1
 
 def restore_interrupt_context(uc):
-    for i, reg in enumerate(CONTEXT_REGISTERS):
-        reg_value = uc.mem_read(ADDRESS_CONTEXT + (i * 4), 4)
-        uc.reg_write(reg, int.from_bytes(reg_value, 'little'))
+    i=0
 
+    for _, reg in enumerate(CONTEXT_REGISTERS):
+        val = uc.mem_read(ADDRESS_CONTEXT + (i * 4), 4)
+        uc.reg_write(reg, int.from_bytes(val, 'little'))
+        i+=1
 
 def hook_code(uc, address, size, user_data):
     """
@@ -144,10 +161,13 @@ def hook_code(uc, address, size, user_data):
         DEBUG(f">>> Tracing instruction at 0x{address:x} ", end='')
         md = Cs(CS_ARCH_RISCV, CS_MODE_RISCV32)
         for i in md.disasm(uc.mem_read(address, size), 0x0):
-            if uc.mem_read(address, size) == b'\x13\x00\x80\x00':
-                DEBUG("\tecall")
+            if uc.mem_read(address, size) == INST_ECALL:
+                DEBUG("\tecall (real)")
                 return
-            if uc.mem_read(address, size) == b'\x13\x00\x90\x00':
+            if uc.mem_read(address, size) == INST_ECALL_CUSTOM:
+                DEBUG("\tecall (custom trap)")
+                return
+            if uc.mem_read(address, size) == INST_MRET_CUSTOM:
                 DEBUG("\tmret")
                 return
             DEBUG("\t%s\t%s" % (i.mnemonic, i.op_str))
@@ -155,7 +175,8 @@ def hook_code(uc, address, size, user_data):
         DEBUG(f">>> Tracing instruction at 0x{address:x}")
         raise Exception("Illegal instruction length! ", size)
 
-    # THESE ARE CUSTOM INSTRUCTIONS FOR 'REAL' ecall and mret
+    # ecall (0x00000073) is handled as a virtualized firmware syscall.
+    # custom ecall/mret helpers are still used for emulator trap flow.
 
     # in case of ebreak, stop emulation to set exit_emulation to True
     if uc.mem_read(address, size) == b'\x73\x00\x10\x00':
@@ -312,17 +333,124 @@ def mmio_write_cb(uc, offset, size, value, data):
 
     return
 
-def next_inst_ecall(inst):
-    if inst == b'\x13\x00\x80\x00':
-        DEBUG("ECALL")
+def next_inst_real_ecall(inst):
+    if inst == INST_ECALL:
+        DEBUG("ECALL (real)")
+        return True
+    return False
+
+def next_inst_custom_ecall(inst):
+    if inst == INST_ECALL_CUSTOM:
+        DEBUG("ECALL (custom)")
         return True
     return False
 
 def next_inst_mret(inst):
-    if inst == b'\x13\x00\x90\x00':
+    if inst == INST_MRET_CUSTOM:
         DEBUG("MRET")
         return True
     return False
+
+def read_c_string(uc, address, max_len=4096):
+    data = bytearray()
+
+    for i in range(max_len):
+        b = uc.mem_read(address + i, 1)
+
+        if b == b"\x00":
+            break
+        data.extend(b)
+    
+    return data.decode("utf-8")
+
+def read_until_terminator(uc, address, max_len=1024 * 1024):
+    data = bytearray()
+    len_terminator = len(b"\r\n\r\n")
+
+    for i in range(max_len):
+        b = uc.mem_read(address + i, 1)
+        data.extend(b)
+
+        if len(data) >= len_terminator and data[-len_terminator:] == b"\r\n\r\n":
+            return bytes(data[:-len_terminator])
+    
+    return None
+
+def ensure_files_table(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS files (
+            filename TEXT PRIMARY KEY,
+            file_size INTEGER NOT NULL,
+            content TEXT NOT NULL
+        )
+        """
+    )
+
+def hook_ecall(uc) -> bool:
+    op = int(uc.reg_read(UC_RISCV_REG_A0))
+    filename_ptr = int(uc.reg_read(UC_RISCV_REG_A1))
+    address = int(uc.reg_read(UC_RISCV_REG_A2))
+
+    filename = read_c_string(uc, filename_ptr)
+    if filename == "":
+        uc.reg_write(UC_RISCV_REG_A0, 0)
+        return True
+
+    try:
+        with sqlite3.connect(SQLITE_DB_PATH) as conn:
+            cursor = conn.cursor()
+            ensure_files_table(cursor)
+
+            # 1 = read
+            if op == 1 or op == 3:
+                cursor.execute("SELECT content FROM files WHERE filename = ?", (filename,))
+                row = cursor.fetchone()
+                if row is None:
+                    uc.reg_write(UC_RISCV_REG_A0, 0)
+                    return True
+
+                content = row[0]
+                content_bytes = str(content).encode("utf-8")
+                uc.mem_write(address, content_bytes)
+                uc.reg_write(UC_RISCV_REG_A0, 1)
+
+                # 3 = read and execute
+                if op == 3:
+                    uc.reg_write(UC_RISCV_REG_PC, address)
+                return True
+
+            # 2 = write
+            if op == 2:
+                content_bytes = read_until_terminator(uc, address)
+                if content_bytes is None:
+                    uc.reg_write(UC_RISCV_REG_A0, 0)
+                    return True
+
+                content = content_bytes.decode("utf-8", errors="ignore")
+                file_size = len(content_bytes)
+
+                cursor.execute(
+                    """
+                    INSERT INTO files (filename, file_size, content)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(filename) DO UPDATE SET
+                        file_size = excluded.file_size,
+                        content = excluded.content
+                    """,
+                    (filename, file_size, content),
+                )
+                conn.commit()
+                uc.reg_write(UC_RISCV_REG_A0, 1)
+                return True
+
+            # Unsupported operation
+            uc.reg_write(UC_RISCV_REG_A0, 0)
+            return True
+    except Exception as e:
+        DEBUG(f"ECALL error: {e}")
+        uc.reg_write(UC_RISCV_REG_A0, 0)
+        return True
 
 def hook_mem(uc, access, address, size, value, user_data):
     print(f"access={access} addr={hex(address)} size={size} value={hex(value)}")
@@ -335,6 +463,8 @@ def main(program="a.out"):
     global DEBUG_PRINTS
     global pc
     global file_output
+    global ram_fs_addr
+    global ram_fs_size
 
     _breakpoint = 0
     breakpoint_set = False
@@ -374,16 +504,23 @@ def main(program="a.out"):
         # Load program
         PROGRAM = read_binary_file_to_program_constant(program)
 
+        ram_fs_addr = None
+        ram_fs_size = 0
+
         mu.mem_write(ADDRESS, PROGRAM)
 
         if init_fs_path is not None and init_fs_addr is not None:
             init_fs = read_binary_file_to_program_constant(init_fs_path)
             init_fs_end = init_fs_addr + len(init_fs)
-            if init_fs_addr < 0 or init_fs_end > MEM_SIZE:
+
+            if init_fs_addr < ADDRESS or init_fs_end > MEM_SIZE:
                 raise Exception(
-                    f"init_fs does not fit in RAM: addr={hex(init_fs_addr)} size={len(init_fs)}"
+                    f"init_fs does not fit in RAM or overlaps protected area: addr={hex(init_fs_addr)} size={len(init_fs)}"
                 )
+            
             mu.mem_write(init_fs_addr, init_fs)
+            ram_fs_addr = init_fs_addr
+            ram_fs_size = len(init_fs)
             DEBUG(f"Loaded init_fs '{init_fs_path}' to {hex(init_fs_addr)} ({len(init_fs)} bytes)")
 
         # Add hooks
@@ -406,16 +543,32 @@ def main(program="a.out"):
             global TIMER_FLAG
             if TIMER_INTERRUPT_ENABLED:
                 timer_i += 1
-            if pc >= (ADDRESS + len(PROGRAM)): # type: ignore
+            if pc >= MEM_SIZE: # pyright: ignore[reportOperatorIssue]
                 break
             if DEBUG_MODE: input()
 
             if pc == _breakpoint: # and breakpoint_set == True:
-                input()
+                input('breakpoint')
                 DEBUG_MODE = True
             
-            if next_inst_ecall(mu.mem_read(pc, 4)): # pyright: ignore[reportArgumentType]
-                if DEBUG_MODE: print(f">>> Tracing instruction at {hex(pc)} \tecall\n")
+            if next_inst_real_ecall(mu.mem_read(pc, 4)): # pyright: ignore[reportArgumentType]
+                if DEBUG_MODE: print(f">>> Tracing instruction at {hex(pc)} \tecall (real)\n") # pyright: ignore[reportArgumentType]
+
+                current_pc = int(mu.reg_read(UC_RISCV_REG_PC)) # pyright: ignore[reportArgumentType]
+                if not hook_ecall(mu):
+                    raise Exception(f"Unsupported standard ECALL id: {int(mu.reg_read(UC_RISCV_REG_A0))}") # pyright: ignore[reportArgumentType]
+
+                new_pc = int(mu.reg_read(UC_RISCV_REG_PC)) # pyright: ignore[reportArgumentType]
+                if new_pc == current_pc:
+                    new_pc = current_pc + 4
+
+                pc = new_pc
+                mu.reg_write(UC_RISCV_REG_PC, pc)
+                continue
+
+            if next_inst_custom_ecall(mu.mem_read(pc, 4)): # pyright: ignore[reportArgumentType]
+                if DEBUG_MODE: print(f">>> Tracing instruction at {hex(pc)} \tecall (custom trap)\n") # pyright: ignore[reportArgumentType]
+
                 save_interrupt_context(mu)
                 mepc = int(mu.reg_read(UC_RISCV_REG_PC)) + 4 # pyright: ignore[reportArgumentType]
                 mu.mem_write(ADDRESS_MEPC, mepc.to_bytes(4, 'little'))
@@ -424,8 +577,10 @@ def main(program="a.out"):
 
             if timer_i == 150:
                 timer_i = 0
+
                 if TIMER_INTERRUPT_ENABLED:
                     if DEBUG_MODE: print("TIMER_INT")
+
                     TIMER_INTERRUPT_ENABLED = False
                     TIMER_FLAG = True
                     save_interrupt_context(mu)
@@ -434,10 +589,12 @@ def main(program="a.out"):
                     pc = ADDRESS_TIMER_INT
 
             if next_inst_mret(mu.mem_read(pc, 4)): # pyright: ignore[reportArgumentType]
-                if DEBUG_MODE: print(f">>> Tracing instruction at {hex(pc)} \tmret\n")
+                if DEBUG_MODE: print(f">>> Tracing instruction at {hex(pc)} \tmret\n") # pyright: ignore[reportArgumentType]
+
                 restore_interrupt_context(mu)
                 mepc = mu.mem_read(ADDRESS_MEPC, 4)
                 pc = int.from_bytes(mepc, 'little') 
+
                 if TIMER_FLAG:
                     TIMER_FLAG = False
                 if TIMER_SET:
@@ -452,7 +609,7 @@ def main(program="a.out"):
             print("\n\nregisters")
             for i in range(31):
                 print(f"x{i} : ",mu.reg_read(i))
-            print("PC", hex(mu.reg_read(UC_RISCV_REG_PC)))
+            print("PC", hex(mu.reg_read(UC_RISCV_REG_PC))) # pyright: ignore[reportArgumentType]
             print("Flag timer int", TIMER_SET)
             print("Status timer int", TIMER_INTERRUPT_ENABLED)
         print(f"\n\n{e}")

@@ -1,10 +1,10 @@
 **Memory Map**
 | ADDRESS | FUNCTION |
 | -------------- | ---- |
-| 0x00000 | Kernel Stack |
-| 0x10074 | Start point of the kernel |
-| 0x10274 | ECALL Trap Handler |
-| 0x1027C | Timer Interrupt Handler |
+| 0x000000 | Kernel Stack |
+| 0x010074 | Start point of the kernel |
+| 0x010274 | ECALL Trap Handler |
+| 0x01027C | Timer Interrupt Handler |
 | 0x1FFF00 | Interrupt context save area (ra, gp, sp, s0-s7, a0-a7; 19 x 4 bytes) |
 | 0x1FFF4B | Last byte of interrupt context area |
 | 0x1FFFFB | MEPC |

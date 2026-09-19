@@ -35,6 +35,14 @@ This program is a customized RISC-V assembly language implementation designed to
 - **Optional init_fs preload**:
   - Emulator can preload an additional raw binary file (`init_fs`) into RAM at a user-selected address before execution starts.
 
+- **ECALL-backed file database (SQLite)**:
+  - Emulator supports file read/write syscalls backed by an SQLite database.
+  - File data is stored base64-encoded in table `files(filename, file_size, content)`.
+  - Supported ECALL operations:
+    - `op=1`: read file content into RAM (`a2` = destination address)
+    - `op=2`: write file content from RAM until terminator `\r\n\r\n`
+    - `op=3`: read file and jump execution to address in `a2`
+
 A complete overview of the hardware memory layout and device addresses can be found in the `memory_map.md` file.
 
 ## 2. Restrictions
@@ -114,13 +122,20 @@ Options:
 - `--breakpoint=<address>` (example: `--breakpoint=0x10274`)
 - `--init-fs=<path/to/init_fs.bin>`
 - `--init-fs-addr=<address>` (example: `--init-fs-addr=0x180000`)
+- `--fs-db=<path/to/files.db>` (aliases: `--fs_db=...`, `--db=...`)
 
 `--init-fs` and `--init-fs-addr` must be provided together.
 
-Example:
+Database path selection order:
+1. `--fs-db=...` (or aliases `--fs_db`, `--db`) if provided
+2. `EMULATOR_FS_DB` environment variable
+3. default `files.db`
+
+Examples:
 
 ```bash
 python3 emulator.py kernel.bin --init-fs=init_fs.bin --init-fs-addr=0x180000
+python3 emulator.py kernel.bin --fs-db=./state/test_files.db
 ```
 
 ## 5. Testing

@@ -176,3 +176,25 @@ def test10():
 
     clean()
 
+
+def test11_cli_db_path():
+    # compile_program("test10.s", "10")
+
+    db_path = f"{TEST_PROGRAM_DIR}test11_files.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    os.system(
+        f"python3 emulator.py {TEST_PROGRAM_DIR}a10.out --debug-prints --fs-db={db_path} > {TEST_PROGRAM_DIR}output.dat"
+    )
+
+    output = read_output()
+
+    assert "HELLOb" in output
+    assert "END" in output
+
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    clean()
+

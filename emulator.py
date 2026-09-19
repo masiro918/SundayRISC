@@ -22,6 +22,7 @@ from scapy.layers.l2 import Ether
 
 import os
 import sqlite3
+import base64
 
 from tcpip_proxy import TCPIPProxy
 from misc import *
@@ -36,6 +37,7 @@ INST_ECALL_CUSTOM = b'\x13\x00\x80\x00'   # emulator trap helper
 INST_MRET_CUSTOM = b'\x13\x00\x90\x00'    # emulator return helper
 
 SQLITE_DB_PATH = os.environ.get("EMULATOR_FS_DB", "files.db")
+# CLI option --fs-db can override this at runtime.
 
 #############################
 DEBUG_MODE = False
@@ -173,7 +175,7 @@ def hook_code(uc, address, size, user_data):
             DEBUG("\t%s\t%s" % (i.mnemonic, i.op_str))
     else:
         DEBUG(f">>> Tracing instruction at 0x{address:x}")
-        raise Exception("Illegal instruction length! ", size)
+        raise Exception("Illegal instruction length! ", size, hex(address))
 
     # ecall (0x00000073) is handled as a virtualized firmware syscall.
     # custom ecall/mret helpers are still used for emulator trap flow.
@@ -411,7 +413,7 @@ def hook_ecall(uc) -> bool:
                     return True
 
                 content = row[0]
-                content_bytes = str(content).encode("utf-8")
+                content_bytes = base64.b64decode(str(content))
                 uc.mem_write(address, content_bytes)
                 uc.reg_write(UC_RISCV_REG_A0, 1)
 
@@ -427,7 +429,7 @@ def hook_ecall(uc) -> bool:
                     uc.reg_write(UC_RISCV_REG_A0, 0)
                     return True
 
-                content = content_bytes.decode("utf-8", errors="ignore")
+                content = base64.b64encode(content_bytes).decode("ascii")
                 file_size = len(content_bytes)
 
                 cursor.execute(
@@ -458,6 +460,30 @@ def hook_mem(uc, access, address, size, value, user_data):
 
 import sys
 
+
+def print_help():
+    print("Usage: python3 emulator.py <program.bin> [options]")
+    print("")
+    print("Options:")
+    print("  -h, --help                   Show this help message and exit")
+    print("  --debug                      Enable debug mode")
+    print("  --debug-prints               Enable debug helper prints")
+    print("  --no-debug-prints            Disable debug helper prints")
+    print("  --breakpoint=<address>       Set breakpoint (e.g. 0x10274)")
+    print("  --init-fs=<path>             Preload init_fs binary to RAM")
+    print("  --init_fs=<path>             Alias for --init-fs")
+    print("  --init-fs-addr=<address>     RAM address for init_fs preload")
+    print("  --init_fs_addr=<address>     Alias for --init-fs-addr")
+    print("  --fs-db=<path/to/files.db>   SQLite file DB path")
+    print("  --fs_db=<path/to/files.db>   Alias for --fs-db")
+    print("  --db=<path/to/files.db>      Alias for --fs-db")
+    print("")
+    print("Database path priority:")
+    print("  1) --fs-db / --fs_db / --db")
+    print("  2) EMULATOR_FS_DB env var")
+    print("  3) files.db")
+
+
 def main(program="a.out"):
     global DEBUG_MODE
     global DEBUG_PRINTS
@@ -465,14 +491,19 @@ def main(program="a.out"):
     global file_output
     global ram_fs_addr
     global ram_fs_size
+    global SQLITE_DB_PATH
 
     _breakpoint = 0
     breakpoint_set = False
     init_fs_path = None
     init_fs_addr = None
+    db_path = SQLITE_DB_PATH
 
     try:
         for arg in sys.argv[2:]:
+            if arg == "--help" or arg == "-h":
+                print_help()
+                return file_output
             if arg == "--debug":
                 DEBUG_MODE = True
                 continue
@@ -495,11 +526,17 @@ def main(program="a.out"):
                 addr = arg.split("=", 1)[1]
                 init_fs_addr = int(addr, 0)
                 continue
+            if arg.startswith("--fs-db=") or arg.startswith("--fs_db=") or arg.startswith("--db="):
+                db_path = arg.split("=", 1)[1]
+                continue
 
             raise Exception(f"Unknown argument: {arg}")
 
         if (init_fs_path is None) != (init_fs_addr is None):
             raise Exception("Both --init-fs and --init-fs-addr must be set together")
+
+        SQLITE_DB_PATH = db_path
+        DEBUG(f"Using file DB: {SQLITE_DB_PATH}")
 
         # Load program
         PROGRAM = read_binary_file_to_program_constant(program)
@@ -617,5 +654,11 @@ def main(program="a.out"):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
+        print_help()
         sys.exit(1)
+
+    if sys.argv[1] == "--help" or sys.argv[1] == "-h":
+        print_help()
+        sys.exit(0)
+
     main(sys.argv[1])

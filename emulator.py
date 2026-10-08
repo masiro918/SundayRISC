@@ -29,7 +29,6 @@ import time
 from tcpip_proxy import TCPIPProxy
 from misc import *
 from hd_device import VirtHD
-from keyboard_device import is_key_pressed
 
 
 ADDRESS = 0x10074

@@ -2,3 +2,4 @@ scapy
 dpkt
 unicorn
 capstone
+keyboard

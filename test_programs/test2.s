@@ -13,3 +13,4 @@ _start:
     addi x0 , x0,   9   # cheat mret
     addi x0 , x0,   2   # NOT prints a
     nop
+

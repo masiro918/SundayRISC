@@ -23,10 +23,13 @@ from scapy.layers.l2 import Ether
 import os
 import sqlite3
 import base64
+import sys
+import time
 
 from tcpip_proxy import TCPIPProxy
 from misc import *
 from hd_device import VirtHD
+from keyboard_device import is_key_pressed
 
 
 ADDRESS = 0x10074
@@ -34,7 +37,7 @@ PROTECTED_START = 0x0
 
 INST_ECALL = b'\x73\x00\x00\x00'          # standard RISC-V ecall
 INST_ECALL_CUSTOM = b'\x13\x00\x80\x00'   # emulator trap helper
-INST_MRET_CUSTOM = b'\x13\x00\x90\x00'    # emulator return helper
+INST_SRET_CUSTOM = b'\x13\x00\x90\x00'    # emulator return helper
 
 SQLITE_DB_PATH = os.environ.get("EMULATOR_FS_DB", "files.db")
 # CLI option --fs-db can override this at runtime.
@@ -169,8 +172,8 @@ def hook_code(uc, address, size, user_data):
             if uc.mem_read(address, size) == INST_ECALL_CUSTOM:
                 DEBUG("\tecall (custom trap)")
                 return
-            if uc.mem_read(address, size) == INST_MRET_CUSTOM:
-                DEBUG("\tmret")
+            if uc.mem_read(address, size) == INST_SRET_CUSTOM:
+                DEBUG("\tsret")
                 return
             DEBUG("\t%s\t%s" % (i.mnemonic, i.op_str))
     else:
@@ -220,7 +223,17 @@ def mmio_read_cb(uc, offset, size, data):
     
     if offset == 0x10:
         return hd.read_status()
-        
+
+    #keyboard
+    if offset == 0x14:
+        import keyboard  
+        try: 
+            if keyboard.is_pressed('ctrl+q'):  
+                return 0x1
+        except Exception as e:
+            pass
+        return 0x0
+            
     return 0x100
 
 def mmio_write_cb(uc, offset, size, value, data):
@@ -318,7 +331,7 @@ def mmio_write_cb(uc, offset, size, value, data):
     # TIMER INTERRUPTS #
     ####################
 
-    # set interruptson
+    # set interruption
     if offset == 0x24:
         global TIMER_INTERRUPT_ENABLED
         global TIMER_SET
@@ -348,7 +361,7 @@ def next_inst_custom_ecall(inst):
     return False
 
 def next_inst_mret(inst):
-    if inst == INST_MRET_CUSTOM:
+    if inst == INST_SRET_CUSTOM:
         DEBUG("MRET")
         return True
     return False
@@ -457,9 +470,6 @@ def hook_ecall(uc) -> bool:
 def hook_mem(uc, access, address, size, value, user_data):
     print(f"access={access} addr={hex(address)} size={size} value={hex(value)}")
     return False
-
-import sys
-
 
 def print_help():
     print("Usage: python3 emulator.py <program.bin> [options]")
@@ -578,6 +588,7 @@ def main(program="a.out"):
         while True:
             global TIMER_INTERRUPT_ENABLED
             global TIMER_FLAG
+            
             if TIMER_INTERRUPT_ENABLED:
                 timer_i += 1
             if pc >= MEM_SIZE: # pyright: ignore[reportOperatorIssue]

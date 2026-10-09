@@ -2,7 +2,7 @@
     .globl _start
 
 _start:
-    li   t0, 0x200014      # t0 = seurattava muistiosoite
+    li   t0, 0x200034      # t0 = seurattava muistiosoite
 
 wait_loop:
     lw   t1, 0(t0)         # lue muistipaikan arvo

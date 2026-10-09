@@ -224,10 +224,11 @@ def mmio_read_cb(uc, offset, size, data):
         return hd.read_status()
 
     #keyboard
-    if offset == 0x14:
+    if offset == 0x34:
         import keyboard  
         try: 
-            if keyboard.is_pressed('ctrl+q'):  
+            if keyboard.is_pressed('ctrl+q'): 
+                time.sleep(0.01) 
                 return 0x1
         except Exception as e:
             pass

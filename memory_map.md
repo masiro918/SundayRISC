@@ -19,6 +19,7 @@
 | 0x20001B | RAM Read Blocks (max: 256) Hard Disc  |
 | 0x200020 | Starting Block in HD (0 to 255) |
 | 0x200024 | Timer Interrupt Enable (write `1`) |
+| 0x200034 | Keyboard | 
 
 **Interrupt context save layout (`0x1FFF00` - `0x1FFF4B`)**
 - `0x1FFF00`: `ra`

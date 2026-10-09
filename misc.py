@@ -31,4 +31,8 @@ def parse_ethernet_frame(frame: bytes) -> list[str]:
     eth = dpkt.ethernet.Ethernet(frame)
     ip = eth.data
     
-    return [bytes_to_str_ip_presentation(ip.src), bytes_to_str_ip_presentation(ip.dst), str(ip.tcp.sport), str(ip.tcp.dport)]
+    return [bytes_to_str_ip_presentation(ip.src), # type: ignore
+            bytes_to_str_ip_presentation(ip.dst), # type: ignore
+            str(ip.tcp.sport), # type: ignore
+            str(ip.tcp.dport) # type: ignore
+            ] 
